@@ -5,6 +5,7 @@ from impacket.ImpactDecoder import *
 from cStringIO import StringIO
 import httplib
 import gzip
+import threading
 
 from BaseHTTPServer import BaseHTTPRequestHandler
 from httplib import HTTPResponse
@@ -36,12 +37,21 @@ class Capture(object):
     response = None
     response_string = None
 
-    def __init__(self):
+    def __init__(self, trigger):
+        self.trigger = trigger
         pc = pcapy.open_live("wlan0", self.max_bytes, self.promiscuous, self.read_timeout)
         pc.setfilter("tcp")
         pc.setfilter("dst port 80 or src port 80")
-        print "Listening on eth0: net=%s, mask=%s, linktype=%d" % (pc.getnet(), pc.getmask(), pc.datalink())
+        # print "Listening on eth0: net=%s, mask=%s, linktype=%d" % (pc.getnet(), pc.getmask(), pc.datalink())
         pc.loop(-1, self.recv_pkts)
+
+        # Next is needed for thread control because loop can't be aborted via condition, and function has to return.
+        # while not self.stop_thread:
+        #     (header, data) = capture_descriptor.next()
+        #     if header and data:
+        #         self.decode_WLAN_frame(header, data)
+        #     else:
+        #         break
 
     def recv_pkts(self, hdr, data):
 
@@ -57,42 +67,31 @@ class Capture(object):
         # return
 
         if string:
-            print 'binnen'
+            # print 'binnen'
 
             if string.startswith('HTTP'): #begin of a new response
-                print 'nieuwe response'
+                # print 'nieuwe response'
                 self.response_string = string
                 self.response = self.make_response(self.response_string)
 
             elif string.split("\n")[0].find('HTTP/') > 0: #begin of a new request
                 if self.response:
-                    self.request.response = self.response
-                    # print self.request.rfile.read()
-                    # print string
-
-                    if self.request.response.getheader('Content-Encoding') == 'gzip':
-                        buf = StringIO(self.request.response.read())
-                        f = gzip.GzipFile(fileobj=buf)
-                        print f.read()
-                    else:
-                        pass
-                        # print self.request.response.read()
-
-                    # print self.request.response.getheaders()
+                    # Do trigger in a thread and go on
+                    threading.Thread(target=self.trigger, args=(self.request, self.response)).start()
 
                     self.response = None #unset old response
                     self.response_string = None
 
-                print 'nieuwe request'
+                # print 'nieuwe request'
                 self.request_string = string
                 self.request = self.make_request(self.request_string)
             else:
                 if self.response_string:
-                    print 'toevoegen aan response'
+                    # print 'toevoegen aan response'
                     self.response_string = self.response_string + string
                     self.response = self.make_response(self.response_string)
                 elif self.request_string:
-                    print 'toevoegen aan request'
+                    # print 'toevoegen aan request'
                     self.request_string = self.request_string + string
                     self.request = self.make_request(self.request_string)
 
@@ -105,4 +104,16 @@ class Capture(object):
         response.begin()
         return response
 
-Capture()
+if __name__ == "__main__":
+    def trigger(request, response):
+        # if response.getheader('Content-Encoding') == 'gzip':
+        #     buf = StringIO(response.read())
+        #     f = gzip.GzipFile(fileobj=buf)
+        #     print f.read()
+        # else:
+        #     print response.read()
+        #     print response.getheader('Content-Encoding')
+
+        print response.getheaders()
+
+    Capture(trigger)
