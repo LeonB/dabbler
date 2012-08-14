@@ -4,9 +4,15 @@ import pcapy
 from impacket.ImpactDecoder import *
 from cStringIO import StringIO
 import httplib
+import gzip
 
 from BaseHTTPServer import BaseHTTPRequestHandler
+from httplib import HTTPResponse
 from StringIO import StringIO
+
+class FakeSocket(StringIO):
+    def makefile(self, *args, **kw):
+        return self
 
 # http://stackoverflow.com/questions/2115410/does-python-have-a-module-for-parsing-http-requests-and-responses
 class HTTPRequest(BaseHTTPRequestHandler):
@@ -20,33 +26,83 @@ class HTTPRequest(BaseHTTPRequestHandler):
         self.error_code = code
         self.error_message = message
 
-promiscuous = False
-max_bytes = 1024
-read_timeout = 100
+class Capture(object):
+    promiscuous = False
+    max_bytes = 1024*10
+    read_timeout = 100
 
-pc = pcapy.open_live("wlan0", max_bytes, promiscuous, read_timeout)
-pc.setfilter("tcp")
-pc.setfilter("dst port 80")
-print "Listening on en1: net=%s, mask=%s, linktype=%d" % (pc.getnet(), pc.getmask(), pc.datalink())
+    request = None
+    request_string = None
+    response = None
+    response_string = None
 
+    def __init__(self):
+        pc = pcapy.open_live("wlan0", self.max_bytes, self.promiscuous, self.read_timeout)
+        pc.setfilter("tcp")
+        pc.setfilter("dst port 80 or src port 80")
+        print "Listening on eth0: net=%s, mask=%s, linktype=%d" % (pc.getnet(), pc.getmask(), pc.datalink())
+        pc.loop(-1, self.recv_pkts)
 
-def recv_pkts(hdr, data):
+    def recv_pkts(self, hdr, data):
 
-    eth = EthDecoder().decode(data)
-    data = eth.child().child().child()
+        eth = EthDecoder().decode(data)
+        data = eth.child().child().child()
 
-    string = data.get_packet().strip()
-    if string:
-        #print string
-        request = HTTPRequest(string)
-        print request.error_code
-        print request.command
-        if hasattr(request, 'path'):
-            print request.path
+        # http://www.httpwatch.com/httpgallery/chunked/
 
-        if hasattr(request, 'headers'):
-            print request.headers
+        string = data.get_packet()
 
-        print '----------------------------'
+        # print string
+        # print '---------------'
+        # return
 
-pc.loop(-1, recv_pkts)
+        if string:
+            print 'binnen'
+
+            if string.startswith('HTTP'): #begin of a new response
+                print 'nieuwe response'
+                self.response_string = string
+                self.response = self.make_response(self.response_string)
+
+            elif string.split("\n")[0].find('HTTP/') > 0: #begin of a new request
+                if self.response:
+                    self.request.response = self.response
+                    # print self.request.rfile.read()
+                    # print string
+
+                    if self.request.response.getheader('Content-Encoding') == 'gzip':
+                        buf = StringIO(self.request.response.read())
+                        f = gzip.GzipFile(fileobj=buf)
+                        print f.read()
+                    else:
+                        pass
+                        # print self.request.response.read()
+
+                    # print self.request.response.getheaders()
+
+                    self.response = None #unset old response
+                    self.response_string = None
+
+                print 'nieuwe request'
+                self.request_string = string
+                self.request = self.make_request(self.request_string)
+            else:
+                if self.response_string:
+                    print 'toevoegen aan response'
+                    self.response_string = self.response_string + string
+                    self.response = self.make_response(self.response_string)
+                elif self.request_string:
+                    print 'toevoegen aan request'
+                    self.request_string = self.request_string + string
+                    self.request = self.make_request(self.request_string)
+
+    def make_request(self, string):
+        return HTTPRequest(string)
+
+    def make_response(self, string):
+        socket = FakeSocket(StringIO(string).read())
+        response = HTTPResponse(socket)
+        response.begin()
+        return response
+
+Capture()
